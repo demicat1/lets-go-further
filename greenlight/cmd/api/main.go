@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"flag"
 	"fmt"
 	"log"
@@ -10,6 +9,9 @@ import (
 	"os"
 	"time"
 
+	"greenlight.aitu/internal/data"
+
+	"github.com/jackc/pgx/v4/pgxpool"
 	_ "github.com/lib/pq"
 )
 
@@ -29,6 +31,7 @@ type config struct {
 type application struct {
 	config config
 	logger *log.Logger
+	models data.Models
 }
 
 func main() {
@@ -53,12 +56,12 @@ func main() {
 	}
 
 	defer db.Close()
-
 	logger.Printf("database connection pool established")
 
 	app := &application{
 		config: cfg,
 		logger: logger,
+		models: data.NewModels(db),
 	}
 
 	srv := &http.Server{
@@ -74,26 +77,29 @@ func main() {
 	logger.Fatal(err)
 }
 
-func openDB(cfg config) (*sql.DB, error) {
-	db, err := sql.Open("postgres", cfg.db.dsn)
+func openDB(cfg config) (*pgxpool.Pool, error) {
+	connConf, err := pgxpool.ParseConfig(cfg.db.dsn)
 	if err != nil {
 		return nil, err
 	}
 
-	db.SetMaxOpenConns(cfg.db.maxOpenConns)
-	db.SetMaxIdleConns(cfg.db.maxIdleConns)
+	db, err := pgxpool.ConnectConfig(context.Background(), connConf)
+	if err != nil {
+		return nil, err
+	}
 
 	duration, err := time.ParseDuration(cfg.db.maxIdleTime)
 	if err != nil {
 		return nil, err
 	}
 
-	db.SetConnMaxIdleTime(duration)
+	connConf.MaxConnIdleTime = (duration)
+	connConf.MaxConns = int32(cfg.db.maxOpenConns)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err = db.PingContext(ctx)
+	err = db.Ping(ctx)
 	if err != nil {
 		return nil, err
 	}
