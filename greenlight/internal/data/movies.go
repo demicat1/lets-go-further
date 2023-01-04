@@ -42,7 +42,6 @@ type MovieModel struct {
 }
 
 func (m MovieModel) Insert(movie *Movie) error {
-	var ctx = context.Background()
 	query := `
 	INSERT INTO movies (title, year, runtime, genres)
 	VALUES ($1, $2, $3, $4)
@@ -50,11 +49,13 @@ func (m MovieModel) Insert(movie *Movie) error {
 
 	args := []interface{}{movie.Title, movie.Year, movie.Runtime, pq.Array(movie.Genres)}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
 	return m.DB.QueryRow(ctx, query, args...).Scan(&movie.ID, &movie.CreatedAt, &movie.Version)
 }
 
 func (m MovieModel) Get(id int64) (*Movie, error) {
-	var ctx = context.Background()
 	if id < 1 {
 		return nil, ErrRecordNotFound
 	}
@@ -65,6 +66,9 @@ func (m MovieModel) Get(id int64) (*Movie, error) {
 	WHERE id = $1`
 
 	var movie Movie
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
 
 	err := m.DB.QueryRow(ctx, query, id).Scan(
 		&movie.ID,
@@ -89,11 +93,10 @@ func (m MovieModel) Get(id int64) (*Movie, error) {
 }
 
 func (m MovieModel) Update(movie *Movie) error {
-	var ctx = context.Background()
 	query := `
 		UPDATE movies
-		SET title = $1, year = $2, runtime = $3, genres = $4, version = gen_random_uuid ()
-		WHERE id = $5
+		SET title = $1, year = $2, runtime = $3, genres = $4, version = gen_random_uuid()
+		WHERE id = $5  AND version = $6
 		RETURNING version`
 
 	args := []interface{}{
@@ -102,15 +105,26 @@ func (m MovieModel) Update(movie *Movie) error {
 		movie.Runtime,
 		pq.Array(movie.Genres),
 		movie.ID,
+		movie.Version,
 	}
 
-	return m.DB.QueryRow(ctx, query, args...).Scan(&movie.Version)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
 
+	err := m.DB.QueryRow(ctx, query, args...).Scan(&movie.Version)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return ErrEditConflict
+		default:
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (m MovieModel) Delete(id int64) error {
-	var ctx = context.Background()
-
 	if id < 1 {
 		return ErrRecordNotFound
 	}
@@ -118,6 +132,9 @@ func (m MovieModel) Delete(id int64) error {
 	query := `
 	DELETE FROM movies
 	WHERE id = $1`
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
 
 	result, err := m.DB.Exec(ctx, query, id)
 	if err != nil {
